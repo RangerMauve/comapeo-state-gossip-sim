@@ -1,163 +1,138 @@
-function noop () {}
+function noop() {}
 
 export class Sim {
   // Map<id, known>
-  #nodes = new Map()
-  #onNew = noop
-  #onEdgeChange = noop
+  #nodes = new Map();
+  #onNew = noop;
+  #onEdgeChange = noop;
 
-  constructor ({ onNew = noop, onEdgeChange = noop } = {}) {
-    this.#onNew = onNew
-    this.#onEdgeChange = onEdgeChange
+  constructor({ onNew = noop, onEdgeChange = noop } = {}) {
+    this.#onNew = onNew;
+    this.#onEdgeChange = onEdgeChange;
   }
 
-  spawnMany (count = 16) {
-    return new Array(count).fill(null).map(() => this.spawn())
+  spawnMany(count = 16) {
+    return new Array(count).fill(null).map(() => this.spawn());
   }
 
-  spawn () {
-    const id = this.size
-    const node = new Node(id, randomInt(1, 64))
-    this.#nodes.set(id, node)
-    this.#onNew(node)
-    return node
+  spawn() {
+    const id = this.size;
+    const node = new Node(id, randomInt(1, 64));
+    this.#nodes.set(id, node);
+    this.#onNew(node);
+    return node;
   }
 
-  node (id) {
-    return this.#nodes.get(id)
+  node(id) {
+    return this.#nodes.get(id);
   }
 
-  get nodes () {
-    return this.#nodes.values()
+  get nodes() {
+    return this.#nodes.values();
   }
 
-  randomNode () {
-    const id = randomInt(0, this.size - 1)
-    return this.node(id)
+  randomNode() {
+    const id = randomInt(0, this.size - 1);
+    return this.node(id);
   }
 
-  get size () {
-    return this.#nodes.size
+  get size() {
+    return this.#nodes.size;
   }
 
-  knowsLatestOf (knowerNodeId, syncNodeId) {
-    const knower = this.node(knowerNodeId)
-    const syncNode = this.node(syncNodeId)
-    const known = knower.lengthFor(syncNodeId)
-    return known === syncNode.length
+  knowsLatestOf(knowerNodeId, syncNodeId) {
+    const knower = this.node(knowerNodeId);
+    const syncNode = this.node(syncNodeId);
+    const known = knower.lengthFor(syncNodeId);
+    return known === syncNode.length;
   }
 
-  syncRandom () {
+  syncRandom() {
     // Two random peers
-    const a = this.randomNode()
-    const b = this.randomNode()
-    // Sync a->b
-    for (const [foundKnown] of a.sync(b)) {
-      this.#onEdgeChange(a, this.node(foundKnown))
-    }
-    // Sync b->a
-    for (const [foundKnown] of b.sync(a)) {
-      this.#onEdgeChange(b, this.node(foundKnown))
-    }
+    const a = this.randomNode();
+    const b = this.randomNode();
+
+    // Gossip others states
+    a.receiveGossipedStates(b.othersStates());
+    b.receiveGossipedStates(a.othersStates());
+
+    a.sync(b);
+    b.sync(a);
+
+    // both a and b have the same state now
+    a.onSyncComplete(b.id);
+    b.onSyncComplete(a.id);
   }
 
-  incrementRandom () {
-    this.randomNode().incrementLength()
+  incrementRandom() {
+    this.randomNode().incrementLength();
   }
 }
 
 class Node {
-  #id = 0
-  #length = 0
+  #id = 0;
   // Map<id, length>
-  #syncs = new Map()
+  #ownState = new Map();
   // Map<id, Map<id, length>
-  #knownSyncs = new Map()
+  #othersStates = new Map();
 
-  constructor (id, initialLength = 0) {
-    this.#id = id
-    this.#length = initialLength
-    this.#setSync(id, initialLength)
+  constructor(id, initialLength = 0) {
+    this.#id = id;
+    this.#ownState.set(id, initialLength);
   }
 
-  get length () {
-    return this.#length
+  get length() {
+    return this.#ownState.get(this.#id) ?? 0;
   }
 
-  get id () {
-    return this.#id
+  get id() {
+    return this.#id;
   }
 
-  get knownSyncs () {
-    return structuredClone(this.#knownSyncs)
+  ownState() {
+    return structuredClone(this.#ownState);
   }
 
-  get syncs () {
-    return structuredClone(this.#syncs)
+  othersStates() {
+    return structuredClone(this.#othersStates);
   }
 
-  // Syncs node and returns changed knowns
-  sync (node) {
-    // Update knownSyncs from others
-    for (const [knowerId, syncs] of node.knownSyncs) {
-      if (knowerId === this.#id) continue
-      for (const [syncerId, length] of syncs) {
-        const knownLength = this.#knownFor(knowerId, syncerId)
-        // TODO: Track this event?
-        if (knownLength < length) this.#updateKnown(knowerId, syncerId, length)
+  othersState(id) {
+    return structuredClone(this.#othersStates.get(id));
+  }
+
+  // pull-syncs with node (updates lengths to lengths from node)
+  sync(otherNode) {
+    for (const [nodeId, length] of otherNode.ownState()) {
+      const currentLength = this.#ownState.get(nodeId) ?? 0;
+      this.#ownState.set(nodeId, Math.max(currentLength, length));
+    }
+  }
+
+  onSyncComplete(nodeId) {
+    // node has same sync state as this node
+    this.#othersStates.set(nodeId, structuredClone(this.#ownState));
+  }
+
+  receiveGossipedStates(othersStates) {
+    for (const [otherNodeId, otherNodeState] of othersStates) {
+      if (otherNodeId === this.#id) continue; // skip self
+      const currentOtherStateKnowledge =
+        this.#othersStates.get(otherNodeId) ?? new Map();
+      for (const [nodeId, length] of otherNodeState) {
+        const currentLength = currentOtherStateKnowledge.get(nodeId) ?? 0;
+        currentOtherStateKnowledge.set(nodeId, Math.max(currentLength, length));
       }
-    }
-
-    // Sync from node via ask, simulates hypercore sync
-    const newLengths = new Map()
-    for (const [syncerId, length] of node.syncs) {
-      const knownLength = this.lengthFor(syncerId)
-      if (knownLength >= length) continue
-      newLengths.set(syncerId, length)
-      this.#setSync(syncerId, length)
-    }
-    node.updateFrom(this.#id, newLengths)
-
-    return newLengths
-
-    // Return newly found lengths
-  }
-
-  updateFrom (fromNodeId, newLengths) {
-    for (const [syncerId, length] of newLengths) {
-      const knownLength = this.#knownFor(fromNodeId, syncerId)
-      if (knownLength >= length) continue
-      this.#updateKnown(fromNodeId, syncerId, length)
+      this.#othersStates.set(otherNodeId, currentOtherStateKnowledge);
     }
   }
 
-  incrementLength (count = 1) {
-    this.#length += count
-    this.#setSync(this.#id, this.#length)
-  }
-
-  #setSync (id, length) {
-    this.#syncs.set(id, length)
-    this.#updateKnown(this.#id, id, length)
-  }
-
-  lengthFor (syncerId) {
-    return this.#syncs.get(syncerId) ?? 0
-  }
-
-  #knownFor (knowerId, syncerId) {
-    if (!this.#knownSyncs.has(knowerId)) return 0
-    return this.#knownSyncs.get(knowerId).get(syncerId) ?? 0
-  }
-
-  #updateKnown (knowerId, syncerId, length) {
-    if (!this.#knownSyncs.has(knowerId)) {
-      this.#knownSyncs.set(knowerId, new Map())
-    }
-    this.#knownSyncs.get(knowerId).set(syncerId, length)
+  incrementLength(count = 1) {
+    const currentLength = this.#ownState.get(this.#id) ?? 0;
+    this.#ownState.set(this.#id, currentLength + count);
   }
 }
 
-function randomInt (min, max) {
-  return Math.floor(Math.random() * (max - min + 1)) + min
+function randomInt(min, max) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
