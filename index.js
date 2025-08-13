@@ -62,6 +62,7 @@ function getEdge (edge) {
   line.setAttribute('id', domId)
   line.setAttribute('stroke', 'green')
   line.setAttribute('stroke-width', '0.25')
+  line.setAttribute('stroke-dasharray', '2 3')
   window.edgeContainer.appendChild(line)
   return line
 }
